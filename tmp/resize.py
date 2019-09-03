@@ -7,5 +7,7 @@ resized_img = img.resize((w, h), Image.BILINEAR)
 np_img = np.array(resized_img)
 print(np_img.shape)
 
-with open('py_out.jpg', 'wb') as f:
-    f.write(np_img.tobytes())
+with open('pybytes.jpg', 'wb') as f:
+    bs = np_img.tobytes()
+    print(len(bs))
+    f.write(bs)

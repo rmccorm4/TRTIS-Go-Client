@@ -133,7 +133,11 @@ func requestGenerator(mc ModelConfig, FLAGS Flags) {
 
 	request.MetaData.BatchSize = FLAGS.BatchSize
 
-	output_message := nvidia_inferenceserver.InferRequestHeader.Output()
+	input_message = nvidia_inferenceserver.InferRequestHeader_Input{}
+	input_message.Name = mc.InputName
+	request.MetaData.Input = append(request.MetaData.Input, input_message)
+
+	output_message := nvidia_inferenceserver.InferRequestHeader_Output{}
 	output_message.Name = mc.OutputName
 	output_message.Cls.Count = FLAGS.NumClasses
 	request.MetaData.Output = append(request.MetaData.Output, output_message)
@@ -166,7 +170,7 @@ func requestGenerator(mc ModelConfig, FLAGS Flags) {
 	}
 
 	// TODO: Implement python's yield/generator behavior with channels
-
+	// TODO: Test just sending bytes of single image
 }
 
 func parseFlags() Flags {
@@ -183,6 +187,10 @@ func parseFlags() Flags {
 	flag.StringVar(&flags.ImagePath, "i", "", "Input image/directory. (Required)")
 	flag.Parse()
 	return flags
+}
+
+func infer() {
+
 }
 
 func main() {
@@ -220,4 +228,6 @@ func main() {
 		log.Fatalf("Couldn't parse model %s: %v", FLAGS.ModelName, err)
 	}
 	fmt.Println(model_config)
+
+	infer()
 }
