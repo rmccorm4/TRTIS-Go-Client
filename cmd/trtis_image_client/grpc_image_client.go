@@ -4,7 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
+	"sort"
 	"time"
 
 	"github.com/rmccorm4/trtis-go-client/nvidia_inferenceserver"
@@ -118,7 +121,53 @@ func ParseModel(status *nvidia_inferenceserver.StatusResponse, model_name string
 	return model_config, nil
 }
 
-func requestGenerator(mc ModelConfig, FLAGS Flags) {}
+func requestGenerator(mc ModelConfig, FLAGS Flags) {
+	request := nvidia_inferenceserver.InferRequest()
+	request.ModelName = FLAGS.ModelName
+	if FLAGS.ModelVersion == 0 {
+		// Choose latest version
+		request.ModelVersion = -1
+	} else {
+		request.ModelVersion = FLAGS.ModelVersion
+	}
+
+	request.MetaData.BatchSize = FLAGS.BatchSize
+
+	output_message := nvidia_inferenceserver.InferRequestHeader.Output()
+	output_message.Name = mc.OutputName
+	output_message.Cls.Count = FLAGS.NumClasses
+	request.MetaData.Output = append(request.MetaData.Output, output_message)
+
+	var filenames []string
+	fi, err := os.Stat(FLAGS.ImagePath)
+	if err != nil {
+		// TODO maybe return error instead, not sure what's better.
+		log.Fatalf("Error with os.Stat for file %s: %v", FLAGS.ImagePath, err)
+		os.Exit(1)
+	}
+	switch mode := fi.Mode(); mode {
+	// ImagePath is a directory
+	case mode.IsDir():
+		files, err := ioutil.ReadDir(FLAGS.ImagePath)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		for _, f := range files {
+			filenames = append(filenames, f.Name())
+		}
+		sort.Strings(filenames)
+
+	// ImagePath is a file
+	case mode.IsRegular():
+		filenames = []string{FLAGS.ImagePath}
+	default:
+		log.Fatal("This probably shouldn't happen.")
+	}
+
+	// TODO: Implement python's yield/generator behavior with channels
+
+}
 
 func parseFlags() Flags {
 	var flags Flags
@@ -126,11 +175,11 @@ func parseFlags() Flags {
 	flag.BoolVar(&flags.Async, "a", false, "Use asynchronous inference API")
 	flag.BoolVar(&flags.Streaming, "streaming", false, "Use streaming inference API")
 	flag.StringVar(&flags.ModelName, "m", "", "Name of model being served. (Required)")
-	flag.IntVar(&flags.ModelVersion, "x", 1, "Version of model. Default is 1.")
+	flag.IntVar(&flags.ModelVersion, "x", 0, "Version of model. Default: Latest Version.")
 	flag.IntVar(&flags.BatchSize, "b", 1, "Batch size. Default is 1.")
-	flag.IntVar(&flags.NumClasses, "c", 1, "Number of class predictions to report. Default is 1.")
-	flag.StringVar(&flags.Scaling, "s", "NONE", "Type of scaling to apply to image pixels. Default is NONE")
-	flag.StringVar(&flags.URL, "u", "localhost:8001", "Inference Server URL. Default is localhost:8001")
+	flag.IntVar(&flags.NumClasses, "c", 1, "Number of class predictions to report. Default: 1.")
+	flag.StringVar(&flags.Scaling, "s", "NONE", "Type of scaling to apply to image pixels. Default: NONE")
+	flag.StringVar(&flags.URL, "u", "localhost:8001", "Inference Server URL. Default: localhost:8001")
 	flag.StringVar(&flags.ImagePath, "i", "", "Input image/directory. (Required)")
 	flag.Parse()
 	return flags
