@@ -4,12 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
 	"io/ioutil"
 	"log"
 	"os"
 	"sort"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/rmccorm4/trtis-go-client/nvidia_inferenceserver"
 	"google.golang.org/grpc"
 )
@@ -19,9 +21,9 @@ type Flags struct {
 	Async        bool
 	Streaming    bool
 	ModelName    string
-	ModelVersion int
+	ModelVersion int64
 	BatchSize    int
-	NumClasses   int
+	NumClasses   uint
 	Scaling      string
 	URL          string
 	ImagePath    string
@@ -121,8 +123,8 @@ func ParseModel(status *nvidia_inferenceserver.StatusResponse, model_name string
 	return model_config, nil
 }
 
-func requestGenerator(mc ModelConfig, FLAGS Flags) {
-	request := nvidia_inferenceserver.InferRequest()
+func requestGenerator(mc ModelConfig, FLAGS Flags) nvidia_inferenceserver.InferRequest {
+	request := nvidia_inferenceserver.InferRequest{}
 	request.ModelName = FLAGS.ModelName
 	if FLAGS.ModelVersion == 0 {
 		// Choose latest version
@@ -131,16 +133,16 @@ func requestGenerator(mc ModelConfig, FLAGS Flags) {
 		request.ModelVersion = FLAGS.ModelVersion
 	}
 
-	request.MetaData.BatchSize = FLAGS.BatchSize
+	request.MetaData.BatchSize = uint32(FLAGS.BatchSize)
 
-	input_message = nvidia_inferenceserver.InferRequestHeader_Input{}
+	input_message := nvidia_inferenceserver.InferRequestHeader_Input{}
 	input_message.Name = mc.InputName
-	request.MetaData.Input = append(request.MetaData.Input, input_message)
+	request.MetaData.Input = append(request.MetaData.Input, &input_message)
 
 	output_message := nvidia_inferenceserver.InferRequestHeader_Output{}
 	output_message.Name = mc.OutputName
-	output_message.Cls.Count = FLAGS.NumClasses
-	request.MetaData.Output = append(request.MetaData.Output, output_message)
+	output_message.Cls.Count = uint32(FLAGS.NumClasses)
+	request.MetaData.Output = append(request.MetaData.Output, &output_message)
 
 	var filenames []string
 	fi, err := os.Stat(FLAGS.ImagePath)
@@ -149,9 +151,9 @@ func requestGenerator(mc ModelConfig, FLAGS Flags) {
 		log.Fatalf("Error with os.Stat for file %s: %v", FLAGS.ImagePath, err)
 		os.Exit(1)
 	}
-	switch mode := fi.Mode(); mode {
+	switch {
 	// ImagePath is a directory
-	case mode.IsDir():
+	case fi.IsDir():
 		files, err := ioutil.ReadDir(FLAGS.ImagePath)
 		if err != nil {
 			log.Fatal(err)
@@ -163,14 +165,39 @@ func requestGenerator(mc ModelConfig, FLAGS Flags) {
 		sort.Strings(filenames)
 
 	// ImagePath is a file
-	case mode.IsRegular():
-		filenames = []string{FLAGS.ImagePath}
 	default:
-		log.Fatal("This probably shouldn't happen.")
+		filenames = []string{FLAGS.ImagePath}
 	}
 
 	// TODO: Implement python's yield/generator behavior with channels
 	// TODO: Test just sending bytes of single image
+
+	image_data := [][]byte{}
+	for _, f := range filenames {
+		img_bytes := preprocess(f)
+		image_data = append(image_data, img_bytes)
+	}
+
+	// TODO: Only works for one image right now
+	request.RawInput = append(request.RawInput, image_data[0])
+	return request
+}
+
+func preprocess(filename string) []byte {
+	src, err := imaging.Open(filename)
+	if err != nil {
+		log.Fatalf("failed to open image: %v", err)
+	}
+
+	height, width := 224, 224
+	src = imaging.Resize(src, height, width, imaging.Linear)
+	// Can't access src.Pix directly from interface, need to assert underlying type
+	src_nrgba := src.(*image.NRGBA)
+	fmt.Printf("%T\n", src)
+	fmt.Printf("%T\n", src_nrgba)
+	pixels := src_nrgba.Pix
+	rgb_pixels := pixels[:3*height*width]
+	return rgb_pixels
 }
 
 func parseFlags() Flags {
@@ -179,18 +206,14 @@ func parseFlags() Flags {
 	flag.BoolVar(&flags.Async, "a", false, "Use asynchronous inference API")
 	flag.BoolVar(&flags.Streaming, "streaming", false, "Use streaming inference API")
 	flag.StringVar(&flags.ModelName, "m", "", "Name of model being served. (Required)")
-	flag.IntVar(&flags.ModelVersion, "x", 0, "Version of model. Default: Latest Version.")
+	flag.Int64Var(&flags.ModelVersion, "x", 0, "Version of model. Default: Latest Version.")
 	flag.IntVar(&flags.BatchSize, "b", 1, "Batch size. Default is 1.")
-	flag.IntVar(&flags.NumClasses, "c", 1, "Number of class predictions to report. Default: 1.")
+	flag.UintVar(&flags.NumClasses, "c", 1, "Number of class predictions to report. Default: 1.")
 	flag.StringVar(&flags.Scaling, "s", "NONE", "Type of scaling to apply to image pixels. Default: NONE")
 	flag.StringVar(&flags.URL, "u", "localhost:8001", "Inference Server URL. Default: localhost:8001")
 	flag.StringVar(&flags.ImagePath, "i", "", "Input image/directory. (Required)")
 	flag.Parse()
 	return flags
-}
-
-func infer() {
-
 }
 
 func main() {
@@ -216,18 +239,24 @@ func main() {
 	defer cancel()
 
 	// Request the status of the server
-	response, err := client.Status(ctx, &nvidia_inferenceserver.StatusRequest{})
+	statusResponse, err := client.Status(ctx, &nvidia_inferenceserver.StatusRequest{})
 	if err != nil {
 		log.Fatalf("Couldn't get server status: %v", err)
 	}
-	//fmt.Printf("%T\n %v\n", response, response)
+	//fmt.Printf("%T\n %v\n", statusResponse, statusResponse)
 
 	// Parse model config from status
-	model_config, err := ParseModel(response, FLAGS.ModelName, int32(FLAGS.BatchSize), FLAGS.Verbose)
+	model_config, err := ParseModel(statusResponse, FLAGS.ModelName, int32(FLAGS.BatchSize), FLAGS.Verbose)
 	if err != nil {
 		log.Fatalf("Couldn't parse model %s: %v", FLAGS.ModelName, err)
 	}
 	fmt.Println(model_config)
 
-	infer()
+	request := requestGenerator(model_config, FLAGS)
+	inferResponse, err := client.Infer(ctx, &request)
+	if err != nil {
+		log.Fatalf("Failed to Infer() on request %s: %v", request, err)
+	}
+	fmt.Println(inferResponse)
+
 }
