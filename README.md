@@ -22,6 +22,9 @@ docker run -d -p8000:8000 -p8001:8001 -p8002:8002 \
            -it -v $(pwd)/model_repository:/models \
            nvcr.io/nvidia/tensorrtserver:19.07-py3 \
            trtserver --model-store=/models
+
+# Check the status of the server
+curl localhost:8000/api/status
 ```
 
 ## Using Client for Inference
