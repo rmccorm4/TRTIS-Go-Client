@@ -14,30 +14,18 @@ import (
 )
 
 type Flags struct {
-	Verbose      bool
 	ModelName    string
 	ModelVersion int64
 	BatchSize    int
-	NumClasses   uint
 	URL          string
-}
-
-type ModelConfig struct {
-	InputName  string
-	OutputName string
-	Channels   int64
-	Height     int64
-	Width      int64
-	DataType   trtis.DataType
 }
 
 func parseFlags() Flags {
 	var flags Flags
-	flag.BoolVar(&flags.Verbose, "v", false, "Enable verbose output.")
-	flag.StringVar(&flags.ModelName, "m", "", "Name of model being served. (Required)")
+	// https://github.com/NVIDIA/tensorrt-inference-server/tree/master/docs/examples/model_repository/simple
+	flag.StringVar(&flags.ModelName, "m", "simple", "Name of model being served. (Required)")
 	flag.Int64Var(&flags.ModelVersion, "x", -1, "Version of model. Default: Latest Version.")
 	flag.IntVar(&flags.BatchSize, "b", 1, "Batch size. Default is 1.")
-	flag.UintVar(&flags.NumClasses, "c", 1, "Number of class predictions to report. Default: 1.")
 	flag.StringVar(&flags.URL, "u", "localhost:8001", "Inference Server URL. Default: localhost:8001")
 	flag.Parse()
 	return flags
@@ -79,10 +67,6 @@ func InferRequest(client trtis.GRPCServiceClient, rawInput [][]byte, modelName s
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	/* We use a simple model that takes 2 input tensors of 16 integers
-	each and returns 2 output tensors of 16 integers each. One
-	output tensor is the element-wise sum of the inputs and one
-	output is the element-wise difference. */
 	inferRequestHeader := &trtis.InferRequestHeader{
 		Input: []*trtis.InferRequestHeader_Input{
 			&trtis.InferRequestHeader_Input{
@@ -163,10 +147,6 @@ func Postprocess(inferResponse *trtis.InferResponse) [][]int32 {
 
 func main() {
 	FLAGS := parseFlags()
-
-	// Debug Defaults
-	FLAGS.URL = "10.33.1.25:8001"
-	FLAGS.ModelName = "simple"
 	fmt.Println("FLAGS:", FLAGS)
 
 	// Connect to gRPC server
@@ -198,8 +178,15 @@ func main() {
 	inputs := [][]uint32{inputData0, inputData1}
 	rawInput := Preprocess(inputs)
 
+	/* We use a simple model that takes 2 input tensors of 16 integers
+	each and returns 2 output tensors of 16 integers each. One
+	output tensor is the element-wise sum of the inputs and one
+	output is the element-wise difference. */
 	inferResponse := InferRequest(client, rawInput, FLAGS.ModelName, FLAGS.ModelVersion, FLAGS.BatchSize)
 
+	/* We expect there to be 2 results (each with batch-size 1). Walk
+	over all 16 result elements and print the sum and difference
+	calculated by the model. */
 	outputs := Postprocess(inferResponse)
 	outputData0 := outputs[0]
 	outputData1 := outputs[1]
