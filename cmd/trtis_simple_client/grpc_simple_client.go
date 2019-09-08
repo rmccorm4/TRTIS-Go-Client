@@ -13,6 +13,11 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	inputSize  = 16
+	outputSize = 16
+)
+
 type Flags struct {
 	ModelName    string
 	ModelVersion int64
@@ -25,7 +30,7 @@ func parseFlags() Flags {
 	// https://github.com/NVIDIA/tensorrt-inference-server/tree/master/docs/examples/model_repository/simple
 	flag.StringVar(&flags.ModelName, "m", "simple", "Name of model being served. (Required)")
 	flag.Int64Var(&flags.ModelVersion, "x", -1, "Version of model. Default: Latest Version.")
-	flag.IntVar(&flags.BatchSize, "b", 1, "Batch size. Default is 1.")
+	flag.IntVar(&flags.BatchSize, "b", 1, "Batch size. Default: 1.")
 	flag.StringVar(&flags.URL, "u", "localhost:8001", "Inference Server URL. Default: localhost:8001")
 	flag.Parse()
 	return flags
@@ -33,7 +38,7 @@ func parseFlags() Flags {
 
 // mode should be either "live" or "ready"
 func HealthRequest(client trtis.GRPCServiceClient, mode string) *trtis.HealthResponse {
-	// Create context for our request
+	// Create context for our request with 10 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -41,7 +46,7 @@ func HealthRequest(client trtis.GRPCServiceClient, mode string) *trtis.HealthRes
 	healthRequest := trtis.HealthRequest{
 		Mode: mode,
 	}
-	// Request the status of the server
+	// Submit health request to server
 	healthResponse, err := client.Health(ctx, &healthRequest)
 	if err != nil {
 		log.Fatalf("Couldn't get server health: %v", err)
@@ -50,12 +55,15 @@ func HealthRequest(client trtis.GRPCServiceClient, mode string) *trtis.HealthRes
 }
 
 func StatusRequest(client trtis.GRPCServiceClient, modelName string) *trtis.StatusResponse {
+	// Create context for our request with 10 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Request the status of the server
+
+	// Create status request for a given model
 	statusRequest := trtis.StatusRequest{
 		ModelName: modelName,
 	}
+	// Submit status request to server
 	statusResponse, err := client.Status(ctx, &statusRequest)
 	if err != nil {
 		log.Fatalf("Couldn't get server status: %v", err)
@@ -64,9 +72,11 @@ func StatusRequest(client trtis.GRPCServiceClient, modelName string) *trtis.Stat
 }
 
 func InferRequest(client trtis.GRPCServiceClient, rawInput [][]byte, modelName string, modelVersion int64, batchSize int) *trtis.InferResponse {
+	// Create context for our request with 10 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Create request header which describes inputs, outputs, and batch size
 	inferRequestHeader := &trtis.InferRequestHeader{
 		Input: []*trtis.InferRequestHeader_Input{
 			&trtis.InferRequestHeader_Input{
@@ -87,7 +97,7 @@ func InferRequest(client trtis.GRPCServiceClient, rawInput [][]byte, modelName s
 		BatchSize: uint32(batchSize),
 	}
 
-	// Request the status of the server
+	// Create inference request for specific model/version
 	inferRequest := trtis.InferRequest{
 		ModelName:    modelName,
 		ModelVersion: modelVersion,
@@ -95,6 +105,7 @@ func InferRequest(client trtis.GRPCServiceClient, rawInput [][]byte, modelName s
 		RawInput:     rawInput,
 	}
 
+	// Submit inference request to server
 	inferResponse, err := client.Infer(ctx, &inferRequest)
 	if err != nil {
 		log.Fatalf("Error processing InferRequest: %v", err)
@@ -102,6 +113,7 @@ func InferRequest(client trtis.GRPCServiceClient, rawInput [][]byte, modelName s
 	return inferResponse
 }
 
+// Convert int32 input data into raw bytes (assumes Little Endian)
 func Preprocess(inputs [][]uint32) [][]byte {
 	inputData0 := inputs[0]
 	inputData1 := inputs[1]
@@ -110,7 +122,6 @@ func Preprocess(inputs [][]uint32) [][]byte {
 	var inputBytes1 []byte
 	// Temp variable to hold our converted int32 -> []byte
 	bs := make([]byte, 4)
-	inputSize := 16
 	for i := 0; i < inputSize; i++ {
 		binary.LittleEndian.PutUint32(bs, inputData0[i])
 		inputBytes0 = append(inputBytes0, bs...)
@@ -121,7 +132,7 @@ func Preprocess(inputs [][]uint32) [][]byte {
 	return [][]byte{inputBytes0, inputBytes1}
 }
 
-// Convert slice of 4 bytes to int32 (Assumes Little Endian)
+// Convert slice of 4 bytes to int32 (assumes Little Endian)
 func readInt32(fourBytes []byte) int32 {
 	buf := bytes.NewBuffer(fourBytes)
 	var retval int32
@@ -129,13 +140,13 @@ func readInt32(fourBytes []byte) int32 {
 	return retval
 }
 
+// Convert output's raw bytes into int32 data (assumes Little Endian)
 func Postprocess(inferResponse *trtis.InferResponse) [][]int32 {
 	var outputs [][]byte
 	outputs = inferResponse.RawOutput
 	outputBytes0 := outputs[0]
 	outputBytes1 := outputs[1]
 
-	outputSize := 16
 	outputData0 := make([]int32, outputSize)
 	outputData1 := make([]int32, outputSize)
 	for i := 0; i < outputSize; i++ {
@@ -168,7 +179,6 @@ func main() {
 	statusResponse := StatusRequest(client, FLAGS.ModelName)
 	fmt.Println(statusResponse)
 
-	inputSize := 16
 	inputData0 := make([]uint32, inputSize)
 	inputData1 := make([]uint32, inputSize)
 	for i := 0; i < inputSize; i++ {
@@ -192,7 +202,7 @@ func main() {
 	outputData1 := outputs[1]
 
 	fmt.Println("\nChecking Inference Outputs\n--------------------------")
-	for i := 0; i < 16; i++ {
+	for i := 0; i < outputSize; i++ {
 		fmt.Printf("%d + %d = %d\n", inputData0[i], inputData1[i], outputData0[i])
 		fmt.Printf("%d - %d = %d\n", inputData0[i], inputData1[i], outputData1[i])
 	}
